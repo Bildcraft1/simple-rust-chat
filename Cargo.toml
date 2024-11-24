@@ -1,0 +1,10 @@
+[package]
+name = "chatserver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+colog = "1.3.0"
+log = "0.4.22"
+tokio = { version = "1.41.1", features = ["full"] }
+x25519-dalek = "2.0.1"
