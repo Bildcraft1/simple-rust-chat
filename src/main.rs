@@ -4,7 +4,7 @@ use aes_gcm::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use colog;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use serde::Deserialize;
 use std::fs;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -25,6 +25,19 @@ async fn main() {
         fs::read_to_string("config.toml").expect("Should have been able to read the file");
     let config: Config =
         toml::from_str(&contents).expect("Should have been able to parse the file");
+
+    info!("Enter your username (or press Enter to use a random one): ");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).unwrap();
+    let mut username = input.trim().to_string();
+
+    if !username.is_empty() {
+        username = input.trim().to_string();
+    } else {
+        username = format!("User{}", rand::random::<u32>());
+    }
+
+    info!("Username: {}", username);
 
     let port = config.port.unwrap_or(8080);
     info!("Connecting to server at {}:{}", config.ip, port);
@@ -60,6 +73,24 @@ async fn main() {
     let nonce_writer = nonce_reader.clone();
 
     warn!("Nonce: {:?}", nonce_reader);
+
+    debug!("Sending Username");
+
+    let encrypted = match cipher_writer.encrypt(&nonce_writer, username.as_bytes()) {
+        Ok(encrypted) => encrypted,
+        Err(e) => {
+            error!("Encryption error: {}", e);
+            return;
+        }
+    };
+
+    let encoded = BASE64.encode(&encrypted);
+
+    if let Err(e) = writer.write_all((encoded + "\n").as_bytes()).await {
+        error!("Failed to send username: {}", e);
+        return;
+    }
+
     info!("Starting the chat");
 
     // Task for sending user input to the server
@@ -138,7 +169,7 @@ async fn main() {
                         }
                     };
 
-                    info!("\nReceived: {}", message.trim());
+                    info!("Received: {}", message.trim());
                     info!("Enter message: ");
                     tokio::io::stdout().flush().await.unwrap();
                 }
