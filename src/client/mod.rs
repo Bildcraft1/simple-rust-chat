@@ -6,10 +6,41 @@ pub(crate) mod handlers {
 
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use log::{debug, error, info};
+    use serde::Deserialize;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpStream;
     use tokio::sync::broadcast;
     use x25519_dalek::{EphemeralSecret, PublicKey};
+
+    /*
+        Specifications of the packet
+        32 bytes - Command name
+        512 bytes - Command argument
+        if command is empty then it is a message
+    */
+    #[derive(Deserialize, Debug)]
+    struct Message {
+        command: Vec<String>,
+        argument: Vec<String>, // Changed from Vec<str> to Vec<String>
+    }
+
+    fn parse_message(message: &str) -> Message {
+        let mut iter = message.split_whitespace();
+
+        let command: Vec<String> = if let Some(cmd) = iter.next() {
+            if cmd.starts_with("/") {
+                vec![cmd.to_string()]
+            } else {
+                Vec::new() // Empty command means it's a regular message
+            }
+        } else {
+            Vec::new()
+        };
+
+        let argument: Vec<String> = iter.map(String::from).collect();
+
+        Message { command, argument }
+    }
 
     pub async fn handle_client(
         socket: TcpStream,
@@ -52,7 +83,7 @@ pub(crate) mod handlers {
             .unwrap();
         let username = String::from_utf8(decrypted)?;
         let username_read = username.clone(); // Clone for read task
-        let username_write = username.clone(); // Clone for write task
+        let mut username_write = username.clone(); // Clone for write task
 
         // Read task for receiving messages from the client
         let read_task = tokio::spawn(async move {
@@ -90,25 +121,71 @@ pub(crate) mod handlers {
                             }
                         };
 
-                        info!(
-                            "Received message from {}: {}",
-                            username_read,
-                            message.trim()
-                        );
+                        info!("Parsing message");
 
-                        if message.trim() == "/quit" {
-                            info!("Client requested to quit");
-                            break;
-                        }
+                        let parsed_message = parse_message(message.as_str());
+                        // Handle commands
+                        if !parsed_message.command.is_empty() {
+                            match parsed_message.command[0].as_str() {
+                                "/msg" => {
+                                    if parsed_message.argument.len() < 2 {
+                                        match tx.send("Error! Invalid /msg format".to_string()) {
+                                            Ok(_) => info!(
+                                                "Error message sent to client {}",
+                                                username_write
+                                            ),
+                                            Err(e) => {
+                                                error!("Failed to send error message: {:?}", e);
+                                                break;
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    let target_user = &parsed_message.argument[0];
+                                    let msg_content = parsed_message.argument[1..].join(" ");
+                                    info!("Private message to {}: {}", target_user, msg_content);
+                                }
 
-                        let formatted_message = format!("{}: {}", username_read, message.trim());
+                                "/quit" => {
+                                    info!("Client requested to quit");
+                                    break;
+                                }
 
-                        // Broadcast the message to all clients
-                        match tx.send(formatted_message) {
-                            Ok(_) => info!("Message broadcast successfully"),
-                            Err(e) => {
-                                error!("Failed to broadcast message: {:?}", e);
-                                break;
+                                "/nickname" => {
+                                    if parsed_message.argument.is_empty() {
+                                        error!(
+                                            "Invalid /nickname format. Usage: /nickname new_name"
+                                        );
+                                        continue;
+                                    }
+                                    let new_nickname = &parsed_message.argument[0];
+                                    info!("Changing nickname to: {}", new_nickname);
+                                    username_write = new_nickname.clone();
+                                    // Here implement your nickname change logic
+                                }
+
+                                _ => {
+                                    error!("Unknown command: {}", parsed_message.command[0]);
+                                }
+                            }
+                        } else {
+                            // Regular message handling
+                            info!(
+                                "Received message from {}: {}",
+                                username_read,
+                                parsed_message.argument.join(" ")
+                            );
+
+                            let formatted_message =
+                                format!("{}: {}", username_read, message.trim());
+
+                            // Broadcast the message to all clients
+                            match tx.send(formatted_message) {
+                                Ok(_) => info!("Message broadcast successfully"),
+                                Err(e) => {
+                                    error!("Failed to broadcast message: {:?}", e);
+                                    break;
+                                }
                             }
                         }
                     }
