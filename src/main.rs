@@ -1,11 +1,14 @@
 mod client;
-use client::handlers::handle_client;
+mod tui; // Add this new module
 
-use colog;
-use log::{error, info};
+use client::handlers::handle_client;
+use log::{error, info, Level, Log, Metadata, Record};
 use serde::Deserialize;
+use std::sync::mpsc;
+use std::thread;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
+use tui::{run_app, LogEntry};
 
 #[derive(Deserialize, Debug)]
 struct Config {
@@ -13,10 +16,47 @@ struct Config {
     port: String,
 }
 
+struct CustomLogger {
+    tx: mpsc::Sender<LogEntry>,
+}
+
+impl Log for CustomLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= Level::Info
+    }
+
+    fn log(&self, record: &Record) {
+        if self.enabled(record.metadata()) {
+            let now = chrono::Local::now();
+            let log_entry = LogEntry {
+                timestamp: now.format("%H:%M:%S").to_string(),
+                level: record.level().to_string(),
+                message: record.args().to_string(),
+            };
+
+            let _ = self.tx.send(log_entry);
+        }
+    }
+
+    fn flush(&self) {}
+}
+
 #[tokio::main]
 async fn main() {
-    // Initialize the logger
-    colog::init();
+    // Create a channel for logging
+    let (tx, rx) = mpsc::channel();
+
+    // Create and set the custom logger
+    let logger = Box::new(CustomLogger { tx });
+    log::set_boxed_logger(logger).unwrap();
+    log::set_max_level(log::LevelFilter::Info);
+
+    // Start the TUI in a separate thread
+    let _tui_handle = thread::spawn(move || {
+        if let Err(e) = run_app(rx) {
+            eprintln!("Error running TUI: {:?}", e);
+        }
+    });
 
     // Load the configuration from config file
     let config = match std::fs::read_to_string("config.toml") {
@@ -34,6 +74,7 @@ async fn main() {
     };
 
     info!("Configuration loaded: {:?}", config);
+
     // Bind a TCP listener to accept incoming connections
     let listener = TcpListener::bind(config.address + ":" + config.port.as_str())
         .await
