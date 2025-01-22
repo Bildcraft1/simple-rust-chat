@@ -101,7 +101,6 @@ async fn main() {
 
         loop {
             input.clear();
-            print!("Enter message: ");
             tokio::io::stdout().flush().await.unwrap();
 
             stdin_reader.read_line(&mut input).await.unwrap();
