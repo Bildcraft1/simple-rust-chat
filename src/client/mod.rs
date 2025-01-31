@@ -7,11 +7,13 @@ pub(crate) mod handlers {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use log::{debug, error, info};
     use serde::Deserialize;
+    use std::sync::Arc;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpStream;
     use tokio::sync::broadcast;
     use x25519_dalek::{EphemeralSecret, PublicKey};
 
+    use crate::db::users::create_user;
     /*
         Specifications of the packet
         32 bytes - Command name
@@ -81,9 +83,11 @@ pub(crate) mod handlers {
         let decrypted = cipher_reader
             .decrypt(&nonce_reader, decoded.as_ref())
             .unwrap();
-        let username = String::from_utf8(decrypted)?;
-        let username_read = username.clone(); // Clone for read task
-        let mut username_write = username.clone(); // Clone for write task
+        let username = Arc::new(String::from_utf8(decrypted)?);
+        let username_read = Arc::clone(&username); // Clone the Arc for read task
+        let username_write = Arc::clone(&username); // Clone the Arc for write task
+
+        create_user(&username, "1234").await?;
 
         // Read task for receiving messages from the client
         let read_task = tokio::spawn(async move {
@@ -160,12 +164,20 @@ pub(crate) mod handlers {
                                     }
                                     let new_nickname = &parsed_message.argument[0];
                                     info!("Changing nickname to: {}", new_nickname);
-                                    username_write = new_nickname.clone();
                                     // Here implement your nickname change logic
                                 }
 
                                 _ => {
                                     error!("Unknown command: {}", parsed_message.command[0]);
+                                    match tx.send("Error! Unknown command".to_string()) {
+                                        Ok(_) => {
+                                            info!("Error message sent to client {}", username_write)
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to send error message: {:?}", e);
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         } else {

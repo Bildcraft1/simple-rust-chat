@@ -1,11 +1,13 @@
 mod client;
 mod tui; // Add this new module
+mod db;
 
 use client::handlers::handle_client;
+use db::users::create_db_pool;
 use log::{error, info, Level, Log, Metadata, Record};
 use serde::Deserialize;
-use std::sync::mpsc;
 use std::thread;
+use std::{process::exit, sync::mpsc};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tui::{run_app, LogEntry};
@@ -43,6 +45,8 @@ impl Log for CustomLogger {
 
 #[tokio::main]
 async fn main() {
+    create_db_pool().await.unwrap();
+
     // Create a channel for logging
     let (tx, rx) = mpsc::channel();
 
@@ -56,6 +60,9 @@ async fn main() {
         if let Err(e) = run_app(rx) {
             eprintln!("Error running TUI: {:?}", e);
         }
+
+        // Exit the process when the TUI closes
+        exit(0);
     });
 
     // Load the configuration from config file
