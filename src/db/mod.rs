@@ -93,6 +93,74 @@ pub(crate) mod users {
         password_hash.to_string()
     }
 
+    pub async fn check_ban(username: &str) -> Result<bool, sqlx::Error> {
+        let pool = create_db_pool().await?;
+
+        let is_banned = sqlx::query(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM users
+                WHERE username = ?
+            )
+            "#,
+        )
+        .bind(username)
+        .fetch_one(&pool)
+        .await?
+        .get::<i64, _>(0);
+
+        // Check if the user is banned
+        if is_banned == 1 {
+            info!("User {} is banned", username);
+        } else {
+            info!("User {} is not banned", username);
+        }
+
+        Ok(is_banned == 1)
+    }
+
+    pub async fn get_ban_reason(username: &str) -> Result<Option<String>, sqlx::Error> {
+        let pool = create_db_pool().await?;
+        info!("Attempting to fetch ban reason for user: {}", username);
+
+        let row_option = sqlx::query(
+            r#"
+            SELECT ban_reason
+            FROM users
+            WHERE username = ?
+            "#,
+        )
+        .bind(username)
+        .fetch_optional(&pool)
+        .await?;
+
+        // Process the result
+        match row_option {
+            Some(row) => {
+                // Row found, now get the ban_reason (which might be NULL)
+                let reason: Option<String> = row.get(0); // Type annotation clarifies intent
+                if let Some(ref r) = reason {
+                    info!("User {} found. Ban reason: {}", username, r);
+                } else {
+                    // User exists, but ban_reason is NULL in the database
+                    info!(
+                        "User {} found, but ban_reason is NULL (not banned)",
+                        username
+                    );
+                }
+                Ok(reason)
+            }
+            None => {
+                // No row found for the username
+                info!("User {} not found in the database", username);
+                // Return Ok(None) as per the function signature, indicating no ban reason found
+                // because the user doesn't exist.
+                Ok(None)
+            }
+        }
+    }
+
     pub async fn verify_password(
         // Use clearer argument names
         username: &str,

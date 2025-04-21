@@ -4,7 +4,9 @@ pub(crate) mod handlers {
         Aes256Gcm, Key, Nonce,
     };
 
-    use crate::db::users::{check_for_account, create_user, hash_password, verify_password};
+    use crate::db::users::{
+        check_ban, check_for_account, create_user, get_ban_reason, hash_password, verify_password,
+    };
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use log::{debug, error, info};
     use serde::Deserialize;
@@ -89,6 +91,38 @@ pub(crate) mod handlers {
 
         // Check if the user already exists in the database
         if check_for_account(&username).await? {
+            // Check if the user is banned
+            if check_ban(&username).await? == true {
+                let ban_reason_result = get_ban_reason(&username).await;
+
+                let message: String = match ban_reason_result {
+                    Ok(Some(reason)) => {
+                        info!("User {} is banned, Reason: {}", username, reason);
+                        format!("User {} is banned, Reason: {}", username, reason).to_string()
+                    }
+                    Ok(None) => {
+                        info!("User {} is banned, but no reason provided", username);
+                        format!("User {} is banned, but no reason provided", username).to_string()
+                    }
+                    Err(e) => {
+                        error!("Error fetching ban reason: {}", e);
+                        format!("You are banned").to_string();
+                        return Ok(());
+                    }
+                };
+
+                let encrypted = match cipher_writer.encrypt(&nonce_writer, message.as_bytes()) {
+                    Ok(encrypted) => encrypted,
+                    Err(e) => {
+                        error!("Encryption error: {}", e);
+                        return Ok(());
+                    }
+                };
+                let message = format!("{}\n", BASE64.encode(&encrypted));
+                writer.write_all(message.as_bytes()).await?;
+                return Ok(());
+            }
+
             info!("User {} already exists", username);
             // Send a message to the client
             let message = format!("User {} is registered, input your password", username);
