@@ -19,3 +19,6 @@ ratatui = "0.29.0"
 crossterm = "0.28.1"
 chrono = "0.4.39"
 sqlx = { version = "0.8", features = [ "sqlite", "runtime-tokio", "tls-native-tls" ] }
+bcrypt = "0.17.0"
+argon2 = "0.5.3"
+thiserror = "2.0.12"

@@ -1,6 +1,6 @@
 mod client;
-mod tui; // Add this new module
 mod db;
+mod tui;
 
 use client::handlers::handle_client;
 use db::users::create_db_pool;

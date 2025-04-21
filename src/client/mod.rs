@@ -4,6 +4,7 @@ pub(crate) mod handlers {
         Aes256Gcm, Key, Nonce,
     };
 
+    use crate::db::users::{check_for_account, create_user, hash_password, verify_password};
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use log::{debug, error, info};
     use serde::Deserialize;
@@ -12,8 +13,6 @@ pub(crate) mod handlers {
     use tokio::net::TcpStream;
     use tokio::sync::broadcast;
     use x25519_dalek::{EphemeralSecret, PublicKey};
-
-    use crate::db::users::create_user;
     /*
         Specifications of the packet
         32 bytes - Command name
@@ -86,8 +85,90 @@ pub(crate) mod handlers {
         let username = Arc::new(String::from_utf8(decrypted)?);
         let username_read = Arc::clone(&username); // Clone the Arc for read task
         let username_write = Arc::clone(&username); // Clone the Arc for write task
+        info!("Username received: {}", username);
 
-        create_user(&username, "1234").await?;
+        // Check if the user already exists in the database
+        if check_for_account(&username).await? {
+            info!("User {} already exists", username);
+            // Send a message to the client
+            let message = format!("User {} is registered, input your password", username);
+            let encrypted = match cipher_writer.encrypt(&nonce_writer, message.as_bytes()) {
+                Ok(encrypted) => encrypted,
+                Err(e) => {
+                    error!("Encryption error: {}", e);
+                    return Ok(());
+                }
+            };
+            let message = format!("{}\n", BASE64.encode(&encrypted));
+            writer.write_all(message.as_bytes()).await?;
+
+            // Read the password from the client
+            line.clear();
+            reader.read_line(&mut line).await?;
+            let decoded = BASE64.decode(line.trim().as_bytes())?;
+            let decrypted = cipher_reader
+                .decrypt(&nonce_reader, decoded.as_ref())
+                .unwrap();
+            // verifiy password
+            let password = String::from_utf8(decrypted)?;
+            if verify_password(&password, &username).await.is_ok() {
+                info!("Password verified successfully");
+                // Send a success message to the client
+                let message = format!("Welcome back, {}!", username);
+                let encrypted = match cipher_writer.encrypt(&nonce_writer, message.as_bytes()) {
+                    Ok(encrypted) => encrypted,
+                    Err(e) => {
+                        error!("Encryption error: {}", e);
+                        return Ok(());
+                    }
+                };
+                let message = format!("{}\n", BASE64.encode(&encrypted));
+                writer.write_all(message.as_bytes()).await?;
+            } else {
+                info!("Password verification failed");
+                // Send an error message to the client
+                let message = format!("Invalid password for user {}", username);
+                let encrypted = match cipher_writer.encrypt(&nonce_writer, message.as_bytes()) {
+                    Ok(encrypted) => encrypted,
+                    Err(e) => {
+                        error!("Encryption error: {}", e);
+                        return Ok(());
+                    }
+                };
+                let message = format!("{}\n", BASE64.encode(&encrypted));
+                writer.write_all(message.as_bytes()).await?;
+                return Ok(());
+            }
+        } else {
+            // User does not exist, create a new account
+            // Send a message to the client
+            let message = format!("User {} is not registered, input your password", username);
+            let encrypted = match cipher_writer.encrypt(&nonce_writer, message.as_bytes()) {
+                Ok(encrypted) => encrypted,
+                Err(e) => {
+                    error!("Encryption error: {}", e);
+                    return Ok(());
+                }
+            };
+            let message = format!("{}\n", BASE64.encode(&encrypted));
+            writer.write_all(message.as_bytes()).await?;
+            // Read the password from the client
+            line.clear();
+            reader.read_line(&mut line).await?;
+            let decoded = BASE64.decode(line.trim().as_bytes())?;
+            let decrypted = cipher_reader
+                .decrypt(&nonce_reader, decoded.as_ref())
+                .unwrap();
+            let password = String::from_utf8(decrypted)?;
+            info!("Password received");
+            // Hash the password
+            let password_hash = hash_password(&password).await;
+            let password_hash = password_hash.as_str();
+            info!("Password hashed successfully");
+            debug!("Hash: {}", password_hash);
+            // Create the user in the database
+            create_user(&username, password_hash).await?;
+        }
 
         // Read task for receiving messages from the client
         let read_task = tokio::spawn(async move {
