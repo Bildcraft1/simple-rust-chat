@@ -28,25 +28,6 @@ pub(crate) mod users {
         Ok(pool)
     }
 
-    pub async fn get_user_by_username(
-        username: &str,
-    ) -> Result<Option<(i64, String)>, sqlx::Error> {
-        let pool = create_db_pool().await?;
-
-        let user = sqlx::query(
-            r#"
-            SELECT id, username
-            FROM users
-            WHERE username = ?
-            "#,
-        )
-        .bind(username)
-        .fetch_optional(&pool)
-        .await?;
-
-        Ok(user.map(|row| (row.get(0), row.get(1))))
-    }
-
     pub async fn check_for_account(username: &str) -> Result<bool, sqlx::Error> {
         // Fixed error type
         let pool = create_db_pool().await?;
@@ -101,7 +82,7 @@ pub(crate) mod users {
             SELECT EXISTS(
                 SELECT 1
                 FROM users
-                WHERE username = ?
+                WHERE username = ? AND is_banned = 1
             )
             "#,
         )
@@ -161,6 +142,43 @@ pub(crate) mod users {
         }
     }
 
+    pub async fn ban_user(username: &str, ban_reason: &str) -> Result<(), sqlx::Error> {
+        let pool = create_db_pool().await?;
+
+        // Use a single query to update the user
+        sqlx::query(
+            r#"
+            UPDATE users
+            SET is_banned = 1, ban_reason = ?
+            WHERE username = ?
+            "#,
+        )
+        .bind(ban_reason)
+        .bind(username)
+        .execute(&pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn unban_user(username: &str) -> Result<(), sqlx::Error> {
+        let pool = create_db_pool().await?;
+
+        // Use a single query to update the user
+        sqlx::query(
+            r#"
+            UPDATE users
+            SET is_banned = 0, ban_reason = NULL
+            WHERE username = ?
+            "#,
+        )
+        .bind(username)
+        .execute(&pool)
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn verify_password(
         // Use clearer argument names
         username: &str,
@@ -213,5 +231,25 @@ pub(crate) mod users {
                 Err(DbError::Hashing(e))
             }
         }
+    }
+
+    pub async fn verify_admin(username: &str) -> Result<bool, sqlx::Error> {
+        let pool = create_db_pool().await?;
+
+        let is_admin = sqlx::query(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM users
+                WHERE username = ? AND is_admin = 1
+            )
+            "#,
+        )
+        .bind(username)
+        .fetch_one(&pool)
+        .await?
+        .get::<i64, _>(0);
+
+        Ok(is_admin == 1)
     }
 }

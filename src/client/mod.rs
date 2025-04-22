@@ -5,7 +5,8 @@ pub(crate) mod handlers {
     };
 
     use crate::db::users::{
-        check_ban, check_for_account, create_user, get_ban_reason, hash_password, verify_password,
+        ban_user, check_ban, check_for_account, create_user, get_ban_reason, hash_password,
+        unban_user, verify_admin, verify_password,
     };
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use log::{debug, error, info};
@@ -15,6 +16,7 @@ pub(crate) mod handlers {
     use tokio::net::TcpStream;
     use tokio::sync::broadcast;
     use x25519_dalek::{EphemeralSecret, PublicKey};
+
     /*
         Specifications of the packet
         32 bytes - Command name
@@ -147,17 +149,6 @@ pub(crate) mod handlers {
             let password = String::from_utf8(decrypted)?;
             if verify_password(&password, &username).await.is_ok() {
                 info!("Password verified successfully");
-                // Send a success message to the client
-                let message = format!("Welcome back, {}!", username);
-                let encrypted = match cipher_writer.encrypt(&nonce_writer, message.as_bytes()) {
-                    Ok(encrypted) => encrypted,
-                    Err(e) => {
-                        error!("Encryption error: {}", e);
-                        return Ok(());
-                    }
-                };
-                let message = format!("{}\n", BASE64.encode(&encrypted));
-                writer.write_all(message.as_bytes()).await?;
             } else {
                 info!("Password verification failed");
                 // Send an error message to the client
@@ -203,6 +194,17 @@ pub(crate) mod handlers {
             // Create the user in the database
             create_user(&username, password_hash).await?;
         }
+        // Send a success message to the client
+        let message = format!("Welcome, {}!", username);
+        let encrypted = match cipher_writer.encrypt(&nonce_writer, message.as_bytes()) {
+            Ok(encrypted) => encrypted,
+            Err(e) => {
+                error!("Encryption error: {}", e);
+                return Ok(());
+            }
+        };
+        let message = format!("{}\n", BASE64.encode(&encrypted));
+        writer.write_all(message.as_bytes()).await?;
 
         // Read task for receiving messages from the client
         let read_task = tokio::spawn(async move {
@@ -263,6 +265,18 @@ pub(crate) mod handlers {
                                     let target_user = &parsed_message.argument[0];
                                     let msg_content = parsed_message.argument[1..].join(" ");
                                     info!("Private message to {}: {}", target_user, msg_content);
+                                    // dm format sender|target_user message
+                                    let formatted_message = format!(
+                                        "{}|{} {}",
+                                        username_read, target_user, msg_content
+                                    );
+                                    match tx.send(formatted_message) {
+                                        Ok(_) => info!("Private message sent successfully"),
+                                        Err(e) => {
+                                            error!("Failed to send private message: {:?}", e);
+                                            break;
+                                        }
+                                    }
                                 }
 
                                 "/quit" => {
@@ -270,16 +284,150 @@ pub(crate) mod handlers {
                                     break;
                                 }
 
-                                "/nickname" => {
+                                "/ban" => {
                                     if parsed_message.argument.is_empty() {
-                                        error!(
-                                            "Invalid /nickname format. Usage: /nickname new_name"
-                                        );
+                                        error!("Invalid /ban format. Usage: /ban username");
+                                        match tx
+                                            .send(format!("Error! Invalid /ban format").to_string())
+                                        {
+                                            Ok(_) => info!(
+                                                "Error message sent to client {}",
+                                                username_write
+                                            ),
+                                            Err(e) => {
+                                                error!("Failed to send error message: {:?}", e);
+                                                break;
+                                            }
+                                        }
                                         continue;
                                     }
-                                    let new_nickname = &parsed_message.argument[0];
-                                    info!("Changing nickname to: {}", new_nickname);
-                                    // Here implement your nickname change logic
+
+                                    match verify_admin(&username_read).await {
+                                        Ok(true) => {
+                                            info!("User {} is admin", username);
+                                            let target_user = &parsed_message.argument[0];
+                                            info!("Banning user: {}", target_user);
+                                            match check_ban(target_user).await {
+                                                Ok(true) => {
+                                                    info!("User {} is already banned", target_user);
+                                                    match tx.send(format!(
+                                                        "User {} is already banned",
+                                                        target_user
+                                                    )) {
+                                                        Ok(_) => info!(
+                                                            "Error message sent to client {}",
+                                                            username_write
+                                                        ),
+                                                        Err(e) => {
+                                                            error!("Failed to send error message: {:?}", e);
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                                Ok(false) => {
+                                                    ban_user(
+                                                        target_user,
+                                                        "You're banned from this server.",
+                                                    )
+                                                    .await
+                                                    .unwrap();
+                                                    info!("User {} has been banned", target_user);
+                                                    match tx.send(
+                                                        format!(
+                                                            "User {} has been banned",
+                                                            target_user,
+                                                        )
+                                                        .to_string(),
+                                                    ) {
+                                                        Ok(_) => info!(
+                                                            "Error message sent to client {}",
+                                                            username_write
+                                                        ),
+                                                        Err(e) => {
+                                                            error!("Failed to send error message: {:?}", e);
+                                                            break;
+                                                        }
+                                                    }
+                                                    continue;
+                                                }
+                                                Err(e) => {
+                                                    error!("Error checking ban status: {:?}", e);
+                                                }
+                                            }
+                                        }
+                                        Ok(false) => {
+                                            error!("User {} is not admin", username);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            error!("Error verifying admin: {:?}", e);
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                "/unban" => {
+                                    if parsed_message.argument.is_empty() {
+                                        error!("Invalid /unban format. Usage: /unban username");
+                                    }
+
+                                    match verify_admin(&username_read).await {
+                                        Ok(true) => {
+                                            info!("User {} is admin", username);
+                                            let target_user = &parsed_message.argument[0];
+                                            info!("Unbanning user: {}", target_user);
+                                            match check_ban(target_user).await {
+                                                Ok(true) => {
+                                                    info!("User {} is banned", target_user);
+                                                    unban_user(target_user).await.unwrap();
+                                                    info!("User {} has been unbanned", target_user);
+                                                    match tx.send(
+                                                        format!(
+                                                            "User {} has been unbanned",
+                                                            target_user,
+                                                        )
+                                                        .to_string(),
+                                                    ) {
+                                                        Ok(_) => info!(
+                                                            "Error message sent to client {}",
+                                                            username_write
+                                                        ),
+                                                        Err(e) => {
+                                                            error!("Failed to send error message: {:?}", e);
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                                Ok(false) => {
+                                                    info!("User {} is not banned", target_user);
+                                                    match tx.send(format!(
+                                                        "User {} is not banned",
+                                                        target_user
+                                                    )) {
+                                                        Ok(_) => info!(
+                                                            "Error message sent to client {}",
+                                                            username_write
+                                                        ),
+                                                        Err(e) => {
+                                                            error!("Failed to send error message: {:?}", e);
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    error!("Error checking ban status: {:?}", e);
+                                                }
+                                            }
+                                        }
+                                        Ok(false) => {
+                                            error!("User {} is not admin", username);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            error!("Error verifying admin: {:?}", e);
+                                            continue;
+                                        }
+                                    }
                                 }
 
                                 _ => {

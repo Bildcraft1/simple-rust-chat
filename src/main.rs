@@ -86,11 +86,10 @@ async fn main() {
     let listener = TcpListener::bind(config.address + ":" + config.port.as_str())
         .await
         .unwrap();
-    info!("Server running on port 8080");
+    info!("Server running on port {}", config.port);
 
     // Create a broadcast channel for sharing messages
     let (tx, _) = broadcast::channel(100);
-
     loop {
         // Accept a new client
         let (socket, addr) = listener.accept().await.unwrap();
