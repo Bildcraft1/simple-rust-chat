@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS files (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    path VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_files_name ON files (name);

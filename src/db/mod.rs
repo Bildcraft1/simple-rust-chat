@@ -179,11 +179,29 @@ pub(crate) mod users {
         Ok(())
     }
 
-    pub async fn verify_password(
-        // Use clearer argument names
-        username: &str,
-        provided_password: &str,
-    ) -> Result<bool, DbError> {
+    pub async fn change_password(username: &str, new_password: &str) -> Result<(), sqlx::Error> {
+        let pool = create_db_pool().await?;
+
+        // Hash the new password
+        let new_password_hash = hash_password(new_password).await;
+
+        // Update the password in the database
+        sqlx::query(
+            r#"
+            UPDATE users
+            SET password_hash = ?
+            WHERE username = ?
+            "#,
+        )
+        .bind(new_password_hash)
+        .bind(username)
+        .execute(&pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn verify_password(username: &str, provided_password: &str) -> Result<bool, DbError> {
         let pool = create_db_pool().await?; // Propagates sqlx::Error
 
         // Fetch the stored hash for the user
@@ -205,8 +223,7 @@ pub(crate) mod users {
         };
 
         // Parse the stored hash
-        let parsed_hash = PasswordHash::new(&stored_hash_str).map_err(DbError::Hashing)?; // Manually map the error
-
+        let parsed_hash = PasswordHash::new(&stored_hash_str).map_err(DbError::Hashing)?;
         let argon2 = Argon2::default();
 
         let verification_result =
@@ -251,5 +268,125 @@ pub(crate) mod users {
         .get::<i64, _>(0);
 
         Ok(is_admin == 1)
+    }
+
+    pub async fn add_kick(username: &str) -> Result<(), sqlx::Error> {
+        let pool = create_db_pool().await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO kick (user_name)
+            VALUES (?)
+            "#,
+        )
+        .bind(username)
+        .execute(&pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn remove_kick(username: &str) -> Result<(), sqlx::Error> {
+        let pool = create_db_pool().await?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM kick
+            WHERE user_name = ?
+            "#,
+        )
+        .bind(username)
+        .execute(&pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn check_kick(username: &str) -> Result<bool, sqlx::Error> {
+        let pool = create_db_pool().await?;
+
+        let exists = sqlx::query(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM kick
+                WHERE user_name = ?
+            )
+            "#,
+        )
+        .bind(username)
+        .fetch_one(&pool)
+        .await?
+        .get::<i64, _>(0);
+
+        Ok(exists == 1)
+    }
+
+    pub async fn add_new_file(name: &str, link: &str) -> Result<(), sqlx::Error> {
+        let pool = create_db_pool().await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO files (name, path)
+            VALUES (?, ?)
+            "#,
+        )
+        .bind(name)
+        .bind(link)
+        .execute(&pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn request_file(name: &str) -> Result<String, sqlx::Error> {
+        let pool = create_db_pool().await?;
+
+        let file_path = sqlx::query(
+            r#"
+            SELECT path
+            FROM files
+            WHERE name = ?
+            "#,
+        )
+        .bind(name)
+        .fetch_one(&pool)
+        .await?
+        .get::<String, _>(0);
+
+        Ok(file_path)
+    }
+
+    pub async fn add_verified_flag_to_file(name: &str) -> Result<(), sqlx::Error> {
+        let pool = create_db_pool().await?;
+
+        sqlx::query(
+            r#"
+            UPDATE files
+            SET admin_verified = 1
+            WHERE name = ?
+            "#,
+        )
+        .bind(name)
+        .execute(&pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn check_file_verified(name: &str) -> Result<bool, sqlx::Error> {
+        let pool = create_db_pool().await?;
+
+        let is_verified = sqlx::query(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM files
+                WHERE name = ? AND admin_verified = 1
+            )
+            "#,
+        )
+        .bind(name)
+        .fetch_one(&pool)
+        .await?
+        .get::<i64, _>(0);
+
+        Ok(is_verified == 1)
     }
 }

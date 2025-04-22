@@ -1,0 +1,2 @@
+ALTER TABLE files
+ADD COLUMN admin_verified BOOLEAN DEFAULT FALSE;

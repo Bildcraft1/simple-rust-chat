@@ -5,8 +5,9 @@ pub(crate) mod handlers {
     };
 
     use crate::db::users::{
-        ban_user, check_ban, check_for_account, create_user, get_ban_reason, hash_password,
-        unban_user, verify_admin, verify_password,
+        add_kick, add_new_file, add_verified_flag_to_file, ban_user, change_password, check_ban,
+        check_file_verified, check_for_account, check_kick, create_user, get_ban_reason,
+        hash_password, remove_kick, request_file, unban_user, verify_admin, verify_password,
     };
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use log::{debug, error, info};
@@ -147,7 +148,7 @@ pub(crate) mod handlers {
                 .unwrap();
             // verifiy password
             let password = String::from_utf8(decrypted)?;
-            if verify_password(&password, &username).await.is_ok() {
+            if verify_password(&username, &password).await? == true {
                 info!("Password verified successfully");
             } else {
                 info!("Password verification failed");
@@ -245,6 +246,22 @@ pub(crate) mod handlers {
                         info!("Parsing message");
 
                         let parsed_message = parse_message(message.as_str());
+
+                        if check_kick(&username).await.unwrap() == true {
+                            info!("User {} is kicked", username);
+                            let message = format!("User {} is kicked", username);
+                            let _ = tx.send(message);
+                            remove_kick(&username).await.unwrap();
+                            break;
+                        }
+
+                        if check_ban(&username).await.unwrap() == true {
+                            info!("User {} is banned", username);
+                            let message = format!("User {} is banned", username);
+                            let _ = tx.send(message);
+                            break;
+                        }
+
                         // Handle commands
                         if !parsed_message.command.is_empty() {
                             match parsed_message.command[0].as_str() {
@@ -282,6 +299,189 @@ pub(crate) mod handlers {
                                 "/quit" => {
                                     info!("Client requested to quit");
                                     break;
+                                }
+
+                                "/kick" => {
+                                    if parsed_message.argument.is_empty() {
+                                        error!("Invalid /kick format. Usage: /kick username");
+                                        match tx.send(
+                                            format!("Error! Invalid /kick format").to_string(),
+                                        ) {
+                                            Ok(_) => info!(
+                                                "Error message sent to client {}",
+                                                username_write
+                                            ),
+                                            Err(e) => {
+                                                error!("Failed to send error message: {:?}", e);
+                                                break;
+                                            }
+                                        }
+                                        continue;
+                                    }
+
+                                    match verify_admin(&username_read).await {
+                                        Ok(true) => {
+                                            info!("User {} is admin", username);
+                                            let target_user = &parsed_message.argument[0];
+                                            info!("Kicking user: {}", target_user);
+                                            add_kick(&target_user).await.unwrap();
+                                            match tx.send(format!(
+                                                "User {} has been kicked",
+                                                target_user
+                                            )) {
+                                                Ok(_) => info!(
+                                                    "Error message sent to client {}",
+                                                    username_write
+                                                ),
+                                                Err(e) => {
+                                                    error!("Failed to send error message: {:?}", e);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        Ok(false) => {
+                                            error!("User {} is not admin", username);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            error!("Error verifying admin: {:?}", e);
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                "/addfile" => {
+                                    if parsed_message.argument.is_empty() {
+                                        error!("Invalid /addfile format. Usage: /addfile filename link");
+                                        match tx.send(
+                                            format!("Invalid /addfile format. Usage: /addfile filename link").to_string(),
+                                        ) {
+                                            Ok(_) => info!(
+                                                "Error message sent to client {}",
+                                                username_write
+                                            ),
+                                            Err(e) => {
+                                                error!("Failed to send error message: {:?}", e);
+                                                break;
+                                            }
+                                        }
+                                        continue;
+                                    }
+
+                                    let file_name = &parsed_message.argument[0];
+                                    let file_link = &parsed_message.argument[1];
+                                    info!("Adding file: {}", file_name);
+                                    info!("File link: {}", file_link);
+
+                                    add_new_file(&file_name, &file_link).await.unwrap();
+
+                                    match tx.send(format!("File {} has been added", file_name)) {
+                                        Ok(_) => {
+                                            info!("Error message sent to client {}", username_write)
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to send error message: {:?}", e);
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                "/verifylink" => {
+                                    if parsed_message.argument.is_empty() {
+                                        error!("Invalid /verifylink format. Usage: /verifylink filename");
+                                        match tx.send(
+                                            format!("Invalid /verifylink format. Usage: /verifylink filename").to_string(),
+                                        ) {
+                                            Ok(_) => info!(
+                                                "Error message sent to client {}",
+                                                username_write
+                                            ),
+                                            Err(e) => {
+                                                error!("Failed to send error message: {:?}", e);
+                                                break;
+                                            }
+                                        }
+                                        continue;
+                                    }
+
+                                    let file_name = &parsed_message.argument[0];
+                                    info!("Verifying link for file: {}", file_name);
+
+                                    match verify_admin(&username).await {
+                                        Ok(true) => {
+                                            info!("User {} is admin", username);
+                                            add_verified_flag_to_file(file_name).await.unwrap();
+                                            match tx.send(format!(
+                                                "File {} has been verified",
+                                                file_name
+                                            )) {
+                                                Ok(_) => info!(
+                                                    "Error message sent to client {}",
+                                                    username_write
+                                                ),
+                                                Err(e) => {
+                                                    error!("Failed to send error message: {:?}", e);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        Ok(false) => {
+                                            error!("User {} is not admin", username);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            error!("Error verifying admin: {:?}", e);
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                "/requestfile" => {
+                                    if parsed_message.argument.is_empty() {
+                                        error!("Invalid /requestfile format. Usage: /requestfile filename");
+                                        match tx.send(
+                                            format!("Invalid /requestfile format. Usage: /requestfile filename").to_string(),
+                                        ) {
+                                            Ok(_) => info!(
+                                                "Error message sent to client {}",
+                                                username_write
+                                            ),
+                                            Err(e) => {
+                                                error!("Failed to send error message: {:?}", e);
+                                                break;
+                                            }
+                                        }
+                                        continue;
+                                    }
+
+                                    let file_name = &parsed_message.argument[0];
+                                    info!("Requesting file: {}", file_name);
+
+                                    let file_link = request_file(file_name).await.unwrap();
+
+                                    match tx.send(format!("Link for {}: {}", file_name, file_link))
+                                    {
+                                        Ok(_) => {
+                                            info!("message sent to client {}", username_write)
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to send error message: {:?}", e);
+                                            break;
+                                        }
+                                    }
+
+                                    if check_file_verified(file_name).await.unwrap() == true {
+                                        match tx.send(format!("dl! {}", file_link)) {
+                                            Ok(_) => info!(
+                                                "Error message sent to client {}",
+                                                username_write
+                                            ),
+                                            Err(e) => {
+                                                error!("Failed to send error message: {:?}", e);
+                                                break;
+                                            }
+                                        }
+                                    }
                                 }
 
                                 "/ban" => {
@@ -426,6 +626,78 @@ pub(crate) mod handlers {
                                         Err(e) => {
                                             error!("Error verifying admin: {:?}", e);
                                             continue;
+                                        }
+                                    }
+                                }
+
+                                "/changepassword" => {
+                                    if parsed_message.argument.len() < 2 {
+                                        error!("Invalid /changepassword format. Usage: /changepassword old_password new_password");
+                                        match tx
+                                            .send(format!("Invalid /changepassword format. Usage: /changepassword old_password new_password"))
+                                        {
+                                            Ok(_) => info!(
+                                                "Error message sent to client {}",
+                                                username_write
+                                            ),
+                                            Err(e) => {
+                                                error!("Failed to send error message: {:?}", e);
+                                                break;
+                                            }
+                                        }
+                                        continue;
+                                    }
+
+                                    let old_password = &parsed_message.argument[0];
+                                    let new_password = &parsed_message.argument[1];
+
+                                    info!("Changing password for user {}", username);
+                                    info!("new password: {}", new_password);
+                                    info!("old password: {}", old_password);
+
+                                    if verify_password(old_password, &username).await.is_ok() {
+                                        match change_password(&username, new_password).await {
+                                            Ok(_) => {
+                                                info!("Password changed successfully");
+                                                let _ = tx.send(
+                                                    "Password changed successfully".to_string(),
+                                                );
+                                            }
+                                            Err(e) => {
+                                                error!("Error changing password: {:?}", e);
+                                                match tx.send(format!(
+                                                    "Error changing password: {:?}",
+                                                    e
+                                                )) {
+                                                    Ok(_) => info!(
+                                                        "Error message sent to client {}",
+                                                        username_write
+                                                    ),
+                                                    Err(e) => {
+                                                        error!(
+                                                            "Failed to send error message: {:?}",
+                                                            e
+                                                        );
+                                                        break;
+                                                    }
+                                                }
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        info!("Old password verification failed");
+                                        match tx.send(format!(
+                                            "Invalid old password for user {}",
+                                            username
+                                        )) {
+                                            Ok(_) => info!(
+                                                "Error message sent to client {}",
+                                                username_write
+                                            ),
+                                            Err(e) => {
+                                                error!("Failed to send error message: {:?}", e);
+                                                break;
+                                            }
                                         }
                                     }
                                 }
